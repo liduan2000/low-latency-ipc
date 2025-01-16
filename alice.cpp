@@ -135,55 +135,34 @@ void record(const Message *m)
 
 /* --------------------------------------不得修改两条分割线之间的内容-------------------------------------- */
 
-void send(const Message *message)
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "alice_to_bob";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_WRONLY);
-        assert(fifo != 0);
-    }
-    assert(write(fifo, message, message->size) == message->size);
-}
 
-const Message *recv()
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "bob_to_alice";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_RDONLY);
-        assert(fifo != 0);
-    }
-    static Message *m = (Message *)malloc(MESSAGE_SIZES[4]);
-    assert(read(fifo, m, sizeof(Message)) == sizeof(Message));
-    assert(read(fifo, m->payload, m->payload_size()) == m->payload_size());
-    return m;
-}
+int main() {
+    ExtendedSharedMemory *shm_ptr;
+    int shm_fd;
 
-int main()
-{
-    while (true)
-    {
+    initialize_shared_memory(&shm_ptr, &shm_fd);
+
+    while (true) {
+        // Prepare message m1
         const Message *m1 = next_message();
-        if (m1)
-        {
-            send(m1);
-            const Message *m2 = recv();
+        if (m1) {
+            while (!shm_ptr->alice_to_bob.try_enqueue(*m1)) {
+                _mm_pause();
+            }
+
+            Message received_msg;
+            while (!shm_ptr->bob_to_alice.try_dequeue(received_msg)) {
+                _mm_pause();
+            }
+
+            // Validate m2
+            const Message *m2 = &received_msg;
+            assert(m2->checksum == crc32(m2));
+
             record(m2);
         }
-        else
-        {
-            time_t dt = now() - test_cases.front().first;
-            timespec req = {dt / SECOND_TO_NANO, dt % SECOND_TO_NANO}, rem;
-            nanosleep(&req, &rem); // 等待到下一条消息的发送时间
-        }
     }
 
+    cleanup_resources(shm_ptr, shm_fd);
     return 0;
 }

@@ -1,48 +1,29 @@
 #include "common.h"
 
-void send(const Message *message)
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "bob_to_alice";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_WRONLY);
-        assert(fifo != 0);
-    }
-    assert(write(fifo, message, message->size) == message->size);
-}
+int main() {
+    ExtendedSharedMemory *shm_ptr;
+    int shm_fd;
 
-const Message *recv()
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "alice_to_bob";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_RDONLY);
-        assert(fifo != 0);
-    }
-    static Message *m = (Message *)malloc(MESSAGE_SIZES[4]);
-    assert(read(fifo, m, sizeof(Message)) == sizeof(Message));
-    assert(read(fifo, m->payload, m->payload_size()) == m->payload_size());
-    return m;
-}
+    initialize_shared_memory(&shm_ptr, &shm_fd);
 
-int main()
-{
-    Message *m2 = (Message *)malloc(MESSAGE_SIZES[4]);
-    while (true)
-    {
-        const Message *m1 = recv();
+    while (true) {
+        Message received_msg;
+        while (!shm_ptr->alice_to_bob.try_dequeue(received_msg)) {
+            _mm_pause();
+        }
+
+        Message* m1 = &received_msg;
+        char* payload = m1->payload;
         assert(m1->checksum == crc32(m1));
-        memcpy(m2, m1, m1->size); // 拷贝m1至m2
-        m2->payload[0]++;         // 第一个字符加一
-        m2->checksum = crc32(m2); // 更新校验和
-        send(m2);
+
+        m1->payload[0]++;
+        m1->checksum = crc32(&received_msg);
+
+        while (!shm_ptr->bob_to_alice.try_enqueue(received_msg)) {
+            _mm_pause();
+        }
     }
 
+    cleanup_resources(shm_ptr, shm_fd);
     return 0;
 }

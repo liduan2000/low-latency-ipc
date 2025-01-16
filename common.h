@@ -1,9 +1,12 @@
+#ifndef COMMON_H
+#define COMMON_H
 // c
 #include <ctime>
 #include <cstdlib>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 
 // c++
@@ -11,6 +14,7 @@
 #include <vector>
 #include <algorithm>
 #include <set>
+#include <atomic>
 
 // Linux
 #include <unistd.h>
@@ -18,6 +22,12 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <xmmintrin.h>
 
 /* --------------------------------------不得修改两条分割线之间的内容-------------------------------------- */
 
@@ -119,3 +129,91 @@ long crc32(const Message *message)
 }
 
 /* --------------------------------------不得修改两条分割线之间的内容-------------------------------------- */
+
+constexpr const char *SHM_NAME = "shm_alice_bob";
+
+
+struct alignas(64) SharedRingBuffer {  // 确保cache line对齐
+    static constexpr size_t BUFFER_SIZE = 8;
+    static constexpr size_t MASK = BUFFER_SIZE - 1;
+
+    std::atomic<uint64_t> head{0};
+    std::atomic<uint64_t> tail{0};
+    
+    Message messages[BUFFER_SIZE];
+    char payload[BUFFER_SIZE][MESSAGE_SIZES[4] - sizeof(Message)];
+
+    // 无锁入队
+    bool try_enqueue(const Message& msg) {
+        uint64_t current_tail = tail.load(std::memory_order_relaxed);
+        uint64_t next_tail = (current_tail + 1) & MASK;
+
+        // 检查队列是否已满
+        uint64_t current_head = head.load(std::memory_order_acquire);
+        if (next_tail == current_head) {
+            return false;  // 队列已满
+        }
+
+        // 写入消息
+        messages[current_tail] = msg;
+
+        // 复制 payload 数据
+        size_t payload_size = msg.payload_size();
+        std::memcpy(payload[current_tail], msg.payload, payload_size);
+
+        // 更新尾指针，使用 release 语义确保消息对其他进程可见
+        tail.store(next_tail, std::memory_order_release);
+        return true;
+    }
+
+    // 无锁出队
+    bool try_dequeue(Message& msg) {
+        uint64_t current_head = head.load(std::memory_order_relaxed);
+
+        // 检查队列是否为空
+        uint64_t current_tail = tail.load(std::memory_order_acquire);
+        if (current_head == current_tail) {
+            return false;  // 队列为空
+        }
+
+        // 读取消息
+        msg = messages[current_head];
+
+        // 复制 payload 数据
+        size_t payload_size = msg.payload_size();
+        std::memcpy(msg.payload, payload[current_head], payload_size);
+
+        // 更新头指针，使用 release 语义
+        head.store((current_head + 1) & MASK, std::memory_order_release);
+        return true;
+    }
+};
+
+// 扩展共享内存结构以包含无锁队列
+struct alignas(64) ExtendedSharedMemory {
+    // std::atomic<bool> alice_ready{false};
+    // std::atomic<bool> bob_ready{false};
+    SharedRingBuffer alice_to_bob;
+    SharedRingBuffer bob_to_alice;
+};
+
+int futex_wait(std::atomic<int>* addr, int expected) {
+    return syscall(SYS_futex, addr, FUTEX_WAIT, expected, nullptr, nullptr, 0);
+}
+
+int futex_wake(std::atomic<int>* addr, int num_waiters) {
+    return syscall(SYS_futex, addr, FUTEX_WAKE, num_waiters, nullptr, nullptr, 0);
+}
+
+inline void initialize_shared_memory(ExtendedSharedMemory **shm_ptr, int *shm_fd) {
+    *shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    ftruncate(*shm_fd, sizeof(ExtendedSharedMemory));
+    *shm_ptr = (ExtendedSharedMemory *)mmap(0, sizeof(ExtendedSharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, *shm_fd, 0);
+}
+
+inline void cleanup_resources(ExtendedSharedMemory *shm_ptr, int shm_fd) {
+    munmap(shm_ptr, sizeof(ExtendedSharedMemory));
+    close(shm_fd);
+}
+
+#endif // COMMON_H
