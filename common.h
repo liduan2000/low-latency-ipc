@@ -1,9 +1,12 @@
+#ifndef COMMON_H
+#define COMMON_H
 // c
 #include <ctime>
 #include <cstdlib>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 
 // c++
@@ -11,6 +14,7 @@
 #include <vector>
 #include <algorithm>
 #include <set>
+#include <atomic>
 
 // Linux
 #include <unistd.h>
@@ -18,6 +22,13 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <semaphore.h>
+#include <immintrin.h>
 
 /* --------------------------------------不得修改两条分割线之间的内容-------------------------------------- */
 
@@ -119,3 +130,28 @@ long crc32(const Message *message)
 }
 
 /* --------------------------------------不得修改两条分割线之间的内容-------------------------------------- */
+
+constexpr const char *SHM_NAME = "shm_alice_bob";
+
+#define CACHELINE_SIZE 64
+
+// Shared memory structure
+struct alignas(CACHELINE_SIZE) SharedMemory {
+    std::atomic<bool> alice_ready{false};
+    std::atomic<bool> bob_ready{false};
+    Message message;
+    char payload[MESSAGE_SIZES[4] - sizeof(Message)];
+};
+
+inline void initialize_shared_memory(SharedMemory **shm_ptr, int *shm_fd) {
+    *shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    ftruncate(*shm_fd, sizeof(SharedMemory));
+    *shm_ptr = (SharedMemory *)mmap(0, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, *shm_fd, 0);
+}
+
+inline void cleanup_resources(SharedMemory *shm_ptr, int shm_fd) {
+    munmap(shm_ptr, sizeof(SharedMemory));
+    close(shm_fd);
+}
+
+#endif // COMMON_H

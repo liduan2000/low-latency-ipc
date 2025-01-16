@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=--std=c++11 -g
+CFLAGS=--std=c++11 -g -lrt -lpthread -O3
 
 TARGETS=alice bob
 
@@ -10,3 +10,4 @@ all: ${TARGETS}
 
 clean:
 	rm -f ${TARGETS}
+

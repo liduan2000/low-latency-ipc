@@ -1,48 +1,31 @@
 #include "common.h"
 
-void send(const Message *message)
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "bob_to_alice";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_WRONLY);
-        assert(fifo != 0);
-    }
-    assert(write(fifo, message, message->size) == message->size);
-}
+int main() {
+    SharedMemory *shm_ptr;
+    int shm_fd;
 
-const Message *recv()
-{
-    static int fifo = 0;
-    if (fifo == 0)
-    {
-        const char *filename = "alice_to_bob";
-        if (access(filename, F_OK))
-            mkfifo(filename, 0666);
-        fifo = open(filename, O_RDONLY);
-        assert(fifo != 0);
-    }
-    static Message *m = (Message *)malloc(MESSAGE_SIZES[4]);
-    assert(read(fifo, m, sizeof(Message)) == sizeof(Message));
-    assert(read(fifo, m->payload, m->payload_size()) == m->payload_size());
-    return m;
-}
+    initialize_shared_memory(&shm_ptr, &shm_fd);
 
-int main()
-{
-    Message *m2 = (Message *)malloc(MESSAGE_SIZES[4]);
-    while (true)
-    {
-        const Message *m1 = recv();
-        assert(m1->checksum == crc32(m1));
-        memcpy(m2, m1, m1->size); // 拷贝m1至m2
-        m2->payload[0]++;         // 第一个字符加一
-        m2->checksum = crc32(m2); // 更新校验和
-        send(m2);
+    while (true) {
+        // Wait for Alice
+        while (!shm_ptr->alice_ready.load(std::memory_order_acquire)) {_mm_pause();}
+
+        // Validate and modify the message
+        // const Message *m1 = &shm_ptr->message;
+        assert(shm_ptr->message.checksum == crc32(&shm_ptr->message));
+
+        // Message *m2 = &shm_ptr->message;
+        // memcpy(m2, m1, sizeof(Message));
+        // memcpy(m2->payload, shm_ptr->payload, m1->payload_size());
+
+        shm_ptr->payload[0]++;
+        shm_ptr->message.checksum = crc32(&shm_ptr->message);
+
+        // Notify Alice
+        shm_ptr->alice_ready.store(false, std::memory_order_release);
+        shm_ptr->bob_ready.store(true, std::memory_order_release);
     }
 
+    cleanup_resources(shm_ptr, shm_fd);
     return 0;
 }
